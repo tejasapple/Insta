@@ -174,7 +174,10 @@ async def add_account_username(message: Message, state: FSMContext) -> None:
 async def add_account_sessionid(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     username = data['username']
-    sessionid = message.text.strip()
+    
+    # AUTO-FIX: Automatically replace URL-encoded %3A with colons to prevent JSONDecodeError
+    sessionid = message.text.strip().replace('%3A', ':')
+    
     session_file = os.path.join(SESSION_DIR, f"{username}_session.json")
     
     msg = await message.answer("⏳ Validating session ID and saving...")
@@ -426,7 +429,7 @@ async def process_schedule(message: Message, state: FSMContext) -> None:
             upload_reel_task,
             'date',
             run_date=schedule_time,
-            args=[message.from_user.id, account_id, video_path]
+     args=[message.from_user.id, account_id, video_path]
         )
         
         await message.answer(f"✅ Reel scheduled to be posted in {delay_seconds} seconds!")
