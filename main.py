@@ -49,7 +49,7 @@ async def init_db() -> None:
                 CREATE TABLE IF NOT EXISTS accounts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT UNIQUE NOT NULL,
-                    password TEXT NOT NULL,
+                    sessionid TEXT NOT NULL,
                     session_file TEXT,
                     fixed_caption TEXT,
                     fixed_poster TEXT,
@@ -67,7 +67,7 @@ async def init_db() -> None:
 class BotStates(StatesGroup):
     # Account Management
     WaitingForUsername = State()
-    WaitingForPassword = State()
+    WaitingForSessionID = State()
     
     # Account Actions
     WaitingForBio = State()
@@ -82,22 +82,22 @@ class BotStates(StatesGroup):
 # ==========================================
 # INSTAGRAM CLIENT HELPER (ASYNC WRAPPER)
 # ==========================================
-def instagram_login(username: str, password: str, session_file: str) -> Client:
+def instagram_login(username: str, sessionid: str, session_file: str) -> Client:
     cl = Client()
     try:
         if os.path.exists(session_file):
             cl.load_settings(session_file)
-            cl.login(username, password)
+            cl.login_by_sessionid(sessionid)
         else:
-            cl.login(username, password)
+            cl.login_by_sessionid(sessionid)
         cl.dump_settings(session_file)
         return cl
     except Exception as e:
         logger.error(f"Instagrapi Login Error for {username}: {e}")
         raise e
 
-async def get_insta_client(username: str, password: str, session_file: str) -> Client:
-    return await asyncio.to_thread(instagram_login, username, password, session_file)
+async def get_insta_client(username: str, sessionid: str, session_file: str) -> Client:
+    return await asyncio.to_thread(instagram_login, username, sessionid, session_file)
 
 # ==========================================
 # KEYBOARDS
@@ -167,35 +167,35 @@ async def add_account_start(call: CallbackQuery, state: FSMContext) -> None:
 @dp.message(BotStates.WaitingForUsername)
 async def add_account_username(message: Message, state: FSMContext) -> None:
     await state.update_data(username=message.text.strip())
-    await message.answer("Enter Instagram Password:")
-    await state.set_state(BotStates.WaitingForPassword)
+    await message.answer("Enter Instagram Session ID (cookie):")
+    await state.set_state(BotStates.WaitingForSessionID)
 
-@dp.message(BotStates.WaitingForPassword)
-async def add_account_password(message: Message, state: FSMContext) -> None:
+@dp.message(BotStates.WaitingForSessionID)
+async def add_account_sessionid(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     username = data['username']
-    password = message.text.strip()
+    sessionid = message.text.strip()
     session_file = os.path.join(SESSION_DIR, f"{username}_session.json")
     
-    msg = await message.answer("⏳ Generating session and logging in... This might take a few seconds.")
+    msg = await message.answer("⏳ Validating session ID and saving...")
     
     try:
         # Test login & generate session
-        await get_insta_client(username, password, session_file)
+        await get_insta_client(username, sessionid, session_file)
         
         async with aiosqlite.connect(DB_NAME) as db:
             await db.execute(
-                "INSERT INTO accounts (username, password, session_file) VALUES (?, ?, ?)",
-                (username, password, session_file)
+                "INSERT INTO accounts (username, sessionid, session_file) VALUES (?, ?, ?)",
+                (username, sessionid, session_file)
             )
             await db.commit()
             
-        await msg.edit_text(f"✅ Account {username} successfully linked and session saved!")
+        await msg.edit_text(f"✅ Account {username} successfully linked with session ID!")
         await state.clear()
         
     except Exception as e:
         logger.error(f"Login failed for {username}: {e}")
-        await msg.edit_text(f"❌ Failed to login. Please check credentials or try later.\nError: {str(e)}")
+        await msg.edit_text(f"❌ Failed to login. Please check session ID or try later.\nError: {str(e)}")
         await state.clear()
 
 # ==========================================
@@ -243,7 +243,7 @@ async def edit_bio_process(message: Message, state: FSMContext) -> None:
     msg = await message.answer("⏳ Updating bio...")
     try:
         async with aiosqlite.connect(DB_NAME) as db:
-            async with db.execute("SELECT username, password, session_file FROM accounts WHERE id = ?", (account_id,)) as cursor:
+            async with db.execute("SELECT username, sessionid, session_file FROM accounts WHERE id = ?", (account_id,)) as cursor:
                 acc = await cursor.fetchone()
         
         cl = await get_insta_client(acc[0], acc[1], acc[2])
@@ -342,13 +342,13 @@ async def upload_reel_task(user_id: int, account_id: int, video_path: str):
         await bot.send_message(user_id, f"⏳ Starting Reel upload process for account ID: {account_id}...")
         
         async with aiosqlite.connect(DB_NAME) as db:
-            async with db.execute("SELECT username, password, session_file, fixed_caption, fixed_poster FROM accounts WHERE id = ?", (account_id,)) as cursor:
+            async with db.execute("SELECT username, sessionid, session_file, fixed_caption, fixed_poster FROM accounts WHERE id = ?", (account_id,)) as cursor:
                 acc = await cursor.fetchone()
         
-        username, password, session_file, fixed_caption, fixed_poster = acc
+        username, sessionid, session_file, fixed_caption, fixed_poster = acc
         caption = fixed_caption if fixed_caption else ""
         
-        cl = await get_insta_client(username, password, session_file)
+        cl = await get_insta_client(username, sessionid, session_file)
         
         # Upload process
         await asyncio.to_thread(
