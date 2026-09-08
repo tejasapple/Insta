@@ -10,7 +10,7 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
 import aiosqlite
 from instagrapi import Client
-from instagrapi.exceptions import ClientError
+from instagrapi.exceptions import ClientError, ChallengeRequired
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # ==========================================
@@ -84,17 +84,39 @@ class BotStates(StatesGroup):
 # ==========================================
 def instagram_login(username: str, sessionid: str, session_file: str) -> Client:
     cl = Client()
+    cl.delay_range = [1, 3] # Human-like delay
+    
     try:
+        # 1. Check if session file exists first (Uploaded via Termius)
         if os.path.exists(session_file):
+            logger.info(f"Session file found for {username}. Loading settings...")
             cl.load_settings(session_file)
+            
+            try:
+                cl.get_timeline_feed()
+                logger.info("✅ Login verified via existing session file!")
+                return cl
+            except Exception as e:
+                logger.warning(f"Session file invalid, checking sessionid... : {e}")
+        
+        # 2. Fallback to sessionid if no file found and sessionid is not dummy
+        if sessionid and sessionid != "12345":
+            logger.info(f"Trying to login via sessionid for {username}")
             cl.login_by_sessionid(sessionid)
+            cl.dump_settings(session_file)
+            return cl
         else:
-            cl.login_by_sessionid(sessionid)
-        cl.dump_settings(session_file)
-        return cl
+            raise ValueError("Session file nahi mili! Kripya PC se json file upload karein.")
+            
+    except ChallengeRequired as e:
+        logger.error(f"Challenge Required for {username}: {e}")
+        raise ValueError(
+            "⚠️ **Security Challenge:** Instagram ne block kar diya hai.\n\n"
+            "**Fix:** Apne PC par login karke session.json banayein aur VPS ke 'sessions' folder mein upload karein."
+        )
     except Exception as e:
         logger.error(f"Instagrapi Login Error for {username}: {e}")
-        raise e
+        raise ValueError(f"❌ Login Error: {e}")
 
 async def get_insta_client(username: str, sessionid: str, session_file: str) -> Client:
     return await asyncio.to_thread(instagram_login, username, sessionid, session_file)
@@ -167,17 +189,14 @@ async def add_account_start(call: CallbackQuery, state: FSMContext) -> None:
 @dp.message(BotStates.WaitingForUsername)
 async def add_account_username(message: Message, state: FSMContext) -> None:
     await state.update_data(username=message.text.strip())
-    await message.answer("Enter Instagram Session ID (cookie):")
+    await message.answer("Enter Instagram Session ID (cookie):\n*(Agar aapne session file VPS par daal di hai, toh yahan sirf 12345 likh kar bhej dein)*")
     await state.set_state(BotStates.WaitingForSessionID)
 
 @dp.message(BotStates.WaitingForSessionID)
 async def add_account_sessionid(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     username = data['username']
-    
-    # AUTO-FIX: Automatically replace URL-encoded %3A with colons to prevent JSONDecodeError
-    sessionid = message.text.strip().replace('%3A', ':')
-    
+    sessionid = message.text.strip()
     session_file = os.path.join(SESSION_DIR, f"{username}_session.json")
     
     msg = await message.answer("⏳ Validating session ID and saving...")
@@ -193,12 +212,16 @@ async def add_account_sessionid(message: Message, state: FSMContext) -> None:
             )
             await db.commit()
             
-        await msg.edit_text(f"✅ Account {username} successfully linked with session ID!")
+        await msg.edit_text(f"✅ Account @{username} successfully linked!")
         await state.clear()
         
+    except ValueError as ve:
+        # This catches our custom formatted error messages
+        await msg.edit_text(str(ve))
+        await state.clear()
     except Exception as e:
         logger.error(f"Login failed for {username}: {e}")
-        await msg.edit_text(f"❌ Failed to login. Please check session ID or try later.\nError: {str(e)}")
+        await msg.edit_text(f"❌ Failed to login.\nError: {str(e)}")
         await state.clear()
 
 # ==========================================
@@ -253,6 +276,8 @@ async def edit_bio_process(message: Message, state: FSMContext) -> None:
         await asyncio.to_thread(cl.account_edit, biography=new_bio)
         
         await msg.edit_text("✅ Bio successfully updated!")
+    except ValueError as ve:
+        await msg.edit_text(str(ve))
     except Exception as e:
         logger.error(f"Bio update failed: {e}")
         await msg.edit_text(f"❌ Failed to update bio: {e}")
@@ -362,6 +387,8 @@ async def upload_reel_task(user_id: int, account_id: int, video_path: str):
         )
         
         await bot.send_message(user_id, f"✅ Reel uploaded successfully to @{username}!")
+    except ValueError as ve:
+        await bot.send_message(user_id, str(ve))
     except Exception as e:
         logger.error(f"Reel upload failed for account {account_id}: {e}")
         await bot.send_message(user_id, f"❌ Reel upload failed for @{username}:\n{e}")
@@ -429,7 +456,7 @@ async def process_schedule(message: Message, state: FSMContext) -> None:
             upload_reel_task,
             'date',
             run_date=schedule_time,
-     args=[message.from_user.id, account_id, video_path]
+            args=[message.from_user.id, account_id, video_path]
         )
         
         await message.answer(f"✅ Reel scheduled to be posted in {delay_seconds} seconds!")
@@ -440,7 +467,6 @@ async def process_schedule(message: Message, state: FSMContext) -> None:
         await message.answer(f"❌ Error scheduling: {e}")
     finally:
         await state.clear()
-
 
 # ==========================================
 # MAIN EXECUTION
