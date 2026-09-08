@@ -17,7 +17,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # CONFIGURATION & LOGGING
 # ==========================================
 load_dotenv()
-BOT_TOKEN = os.getenv("8799223742:AAFV2JLCqjnhsUUONyBEidTQ0PKNFH0u2uM")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN is missing in .env file.")
